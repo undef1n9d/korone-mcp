@@ -1,0 +1,9 @@
+{
+  "name": "roblox-mcp",
+  "version": "1.0.0",
+  "description": "MCP server + Roblox Studio 2021 plugin",
+  "main": "index.js",
+  "bin": { "roblox-mcp": "./index.js" },
+  "scripts": { "start": "node index.js" },
+  "engines": { "node": ">=18" }
+}
