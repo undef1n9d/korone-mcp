@@ -13,7 +13,19 @@ const POLL_TIMEOUT_MS = 30000;
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'roblox-mcp';
-const SERVER_VERSION = '1.1';
+const SERVER_VERSION = '1.2';
+const PLUGIN_FILE = path.join(__dirname, 'korone-mcp.lua');
+
+// Optional auth: set ENABLE_AUTH to true and choose a token to protect
+// /call and /client-toggle. Default is off (open local access on 127.0.0.1).
+// When enabled, requests need ?token= or the x-mcp-token header.
+const ENABLE_AUTH = false;
+const MCP_TOKEN = 'change-me';
+function checkToken(req, url) {
+  if (!ENABLE_AUTH) return true;
+  const t = url?.searchParams?.get('token') || req.headers['x-mcp-token'];
+  return t === MCP_TOKEN;
+}
 
 // ─────────────────────────────────────────────────────────
 // Tools schema — single source of truth. Plugin must implement every handler.
@@ -385,7 +397,8 @@ function renderDocsHTML() {
     const propKeys = Object.keys(props).filter(k => k !== 'client'); // panel targets clients via chips, not fields
     const inputs = propKeys.length === 0
       ? '<div class="np">No parameters</div>'
-      : propKeys.map(([k, v]) => {
+      : propKeys.map(k => {
+          const v = props[k];
           const isReq = required.includes(k);
           const desc = v.description || '';
           const type = v.type || 'string';
@@ -402,6 +415,11 @@ function renderDocsHTML() {
           } else if (type === 'object') {
             const ph = example !== undefined ? JSON.stringify(example) : '{"k":"v"}';
             input = `<textarea data-tkey="${k}" class="fi" rows="2" placeholder='${ph}'></textarea>`;
+          } else if (type === 'string' && (k === 'code' || k === 'source')) {
+            // Multi-line Lua code: a single-line input would make pasting
+            // scripts with newlines impossible.
+            const ph = example !== undefined ? String(example) : type;
+            input = `<textarea data-tkey="${k}" class="fi" rows="5" placeholder='${ph}'></textarea>`;
           } else {
             const ph = example !== undefined ? String(example) : type;
             input = `<input data-tkey="${k}" class="fi" placeholder="${ph}">`;
@@ -434,168 +452,24 @@ function renderDocsHTML() {
     ${byCategory.get(cat).map(renderTool).join('')}
   </div>`).join('');
 
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MCP</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{color-scheme:dark}
-body{background:#141414;color:#8a8a8a;font:12px/1.5 ui-monospace,SFMono-Regular,'Cascadia Code',Consolas,monospace;padding:28px 16px}
-.w{max-width:720px;margin:0 auto}
-header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:14px;margin-bottom:6px;border-bottom:1px solid #262626;flex-wrap:wrap}
-h1{font-size:14px;font-weight:600;color:#d4d4d4;letter-spacing:.2px}
-.m{color:#5c5c5c;font-size:10.5px;margin-top:2px}
-.st{font-size:10.5px;color:#6a6a6a;display:flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid #262626;border-radius:5px;background:#181818}
-.dt{width:6px;height:6px;border-radius:50%;display:inline-block;background:#3a3a3a;transition:background .2s}
-.dt.on{background:#7ea87e;box-shadow:0 0 5px #7ea87e55}
-.dt.off{background:#3a3a3a}
-.bar{display:flex;gap:8px;margin:14px 0 10px;align-items:center;flex-wrap:wrap}
-.sr-w{position:relative;flex:1;min-width:160px}
-.sr-w:before{content:'/';position:absolute;left:9px;top:50%;transform:translateY(-50%);color:#4a4a4a;font-size:11px;pointer-events:none}
-.sr{width:100%;background:#181818;border:1px solid #2a2a2a;border-radius:5px;padding:7px 8px 7px 20px;font:inherit;font-size:11.5px;color:#ccc;outline:none;transition:border-color .15s}
-.sr::placeholder{color:#5c5c5c}
-.sr:focus{border-color:#484848}
-.cl{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
-.clt{font-size:10px;padding:3px 8px;background:#181818;border:1px solid #2a2a2a;border-radius:5px;display:flex;align-items:center;gap:5px;color:#6a6a6a;transition:border-color .15s;cursor:pointer}
-.clt.on{border-color:#3d3d3d;color:#b0b0b0}
-.clt.tgt{border-color:#5a7a5a;color:#b8c8b8}
-.clt.tgt .dt{background:#7ea87e;box-shadow:0 0 5px #7ea87e55}
-.clt button{background:none;border:none;color:#5c5c5c;cursor:pointer;font-size:11px;padding:0 1px;line-height:1}
-.clt button:hover{color:#ccc}
-.cnote{font-size:10px;color:#4a4a4a;flex-basis:100%;padding-left:2px}
-.cat-h{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#4a4a4a;margin:18px 0 6px;padding-left:2px}
-.cat:first-of-type .cat-h{margin-top:4px}
-.c{border:1px solid #262626;border-radius:6px;margin-bottom:6px;overflow:hidden;background:#181818;transition:border-color .15s}
-.c:hover{border-color:#333}
-.ch{display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer;user-select:none}
-.ch .ca{color:#4a4a4a;font-size:9px;transition:transform .15s;flex-shrink:0}
-.c.op .ch .ca{transform:rotate(90deg)}
-.ch .cn{font-size:11.5px;color:#c2c2c2;white-space:nowrap;font-weight:600}
-.ch .cd{color:#5c5c5c;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.cb{display:none;padding:4px 12px 12px;border-top:1px solid #232323}
-.c.op .cb{display:block}
-.ci{padding-top:8px}
-.fi-w{margin-bottom:10px}
-.fi-w:last-child{margin-bottom:0}
-.fh{display:flex;align-items:center;gap:6px;margin-bottom:3px}
-.fk{font-size:10.5px;color:#9a9a9a}
-.rq{font-size:8.5px;color:#8a7a5c;background:#2a2418;border:1px solid #3a3020;border-radius:3px;padding:1px 5px;letter-spacing:.3px;text-transform:uppercase}
-.fd{color:#5c5c5c;font-size:10px;margin-bottom:5px}
-.fi{width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:4px;padding:6px 8px;font:inherit;font-size:11px;color:#ccc;outline:none;transition:border-color .15s}
-.fi::placeholder{color:#4a4a4a}
-.fi:focus{border-color:#484848}
-textarea.fi{resize:vertical;min-height:32px}
-.bl{display:flex;align-items:center;gap:6px;font-size:11px;color:#aaa;cursor:pointer}
-.bl input{accent-color:#6a6a6a;width:13px;height:13px}
-.np{color:#5c5c5c;font-size:10.5px;padding:2px 0 8px}
-.actions{display:flex;gap:6px;margin-top:4px}
-.b{background:#232323;color:#bbb;border:1px solid #333;border-radius:4px;padding:6px 13px;font:inherit;font-size:11px;cursor:pointer;transition:background .15s,border-color .15s}
-.b:hover{background:#2a2a2a;border-color:#454545}
-.b:active{background:#1e1e1e}
-.b:disabled{opacity:.35;cursor:default}
-.b2{background:transparent;color:#6a6a6a}
-.b2:hover{background:#202020;color:#999}
-.o{background:#101010;border:1px solid #262626;border-radius:4px;padding:8px;font-size:10.5px;color:#8a8a8a;margin-top:8px;white-space:pre-wrap;word-break:break-word;display:none;max-height:220px;overflow:auto}
-.o.s{display:block}
-.o.e{color:#b08a8a;border-color:#3a2424}
-footer{margin-top:22px;color:#454545;font-size:10px;text-align:center}
-</style>
-</head>
-<body>
-<div class="w">
-<header>
-  <div>
-    <h1>Korone Studio (2021M) MCP</h1>
-    <div class="m">${TOOLS.length} tools · v${SERVER_VERSION}</div>
-  </div>
-  <div class="st" id="st"><span class="dt off"></span>checking</div>
-</header>
-<div class="bar">
-  <div class="sr-w"><input class="sr" id="sr" placeholder="Search tools..." oninput="f(this.value)"></div>
-</div>
-<div id="cl"></div>
-<div id="tl">${sections}</div>
-<footer>polling 127.0.0.1:4444</footer>
-</div>
-<script>
-async function r(n){
-  const c=document.querySelector('.c[data-t="'+n+'"]'); if(!c)return;
-  const b=c.querySelector('.b'),o=document.getElementById('o-'+n);
-  b.disabled=1; o.className='o s'; o.textContent='running...';
-  const p={};
-  c.querySelectorAll('[data-tkey]').forEach(e=>{
-    const k=e.getAttribute('data-tkey');
-    if(e.type==='checkbox'){p[k]=e.checked;return}
-    let v=e.value.trim(); if(!v)return;
-    if(e.tagName==='SELECT'){p[k]=v;return}
-    try{v=JSON.parse(v)}catch{}
-    p[k]=v;
-  });
-  try{
-    const resp=await fetch('/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,params:p,client:curTarget||undefined})});
-    const j=await resp.json();
-    if(j.error){o.className='o s e';o.textContent=j.error}
-    else{const t=j.data?typeof j.data==='string'?j.data:JSON.stringify(j.data,null,2):'(empty)';o.textContent=t}
-  }catch(e){o.className='o s e';o.textContent='err: '+e.message}
-  b.disabled=0;
+  return renderPanel(sections);
 }
-async function cp(n){
-  const o=document.getElementById('o-'+n); if(!o||!o.textContent)return;
-  try{await navigator.clipboard.writeText(o.textContent)}catch{}
-}
-function f(q){
-  q=q.toLowerCase();
-  document.querySelectorAll('.c').forEach(c=>{
-    const name=c.querySelector('.cn').textContent.toLowerCase();
-    const desc=c.querySelector('.cd').textContent.toLowerCase();
-    c.style.display=(name.includes(q)||desc.includes(q))?'':'none';
-  });
-  document.querySelectorAll('.cat').forEach(cat=>{
-    const visible=[...cat.querySelectorAll('.c')].some(c=>c.style.display!=='none');
-    cat.style.display=visible?'':'none';
-  });
-}
-function esc(s){
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-let curTarget=null;
-function rc(clients){
-  const d=document.getElementById('cl');
-  if(!clients||!clients.length){d.innerHTML='';return}
-  const cur=curTarget&&clients.find(c=>c.key===curTarget);
-  if(curTarget&&!cur)curTarget=null;
-  d.innerHTML=clients.map(c=>'<div class="clt'+(c.active?' on':'')+(c.key===curTarget?' tgt':'')+'" data-key="'+esc(c.key)+'" title="click to target · × to disable"><span class="dt '+(c.active?'on':'off')+'"></span>'+esc(c.name)+'<button class="ctb" data-key="'+esc(c.key)+'">×</button></div>').join('')
-    +'<div class="cnote">target: '+((cur&&curTarget)?esc(cur.name):'auto — most recent active')+'</div>';
-}
-document.getElementById('cl').addEventListener('click', async e=>{
-  const chip=e.target.closest('.clt'); if(!chip)return;
-  const key=chip.getAttribute('data-key');
-  if(e.target.closest('.ctb')){
-    await fetch('/client-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
-    if(curTarget===key)curTarget=null;
-  }else{
-    curTarget=(curTarget===key)?null:key;
+
+// Panel page lives in panel.html (kept out of index.js so it is editable and
+// lintable on its own). Dynamic parts use {{PLACEHOLDER}} tokens.
+function renderPanel(sections) {
+  let html;
+  try {
+    html = fs.readFileSync(path.join(__dirname, 'panel.html'), 'utf8');
+  } catch (err) {
+    process.stderr.write(`[roblox-mcp] cannot read panel.html: ${err.message}\n`);
+    return '<!DOCTYPE html><html><body style="background:#141414;color:#c33;font:14px monospace;padding:24px"><h1>panel.html not found</h1><p>' + err.message + '</p></body></html>';
   }
-  st();
-});
-async function st(){
-  try{
-    const r=await fetch('/status'),j=await r.json();
-    const on=j.pluginConnected;
-    document.querySelector('#st').innerHTML='<span class="dt '+(on?'on':'off')+'"></span>'+(on?'connected':'offline');
-    rc(j.clients);
-  }catch{ document.querySelector('#st').innerHTML='<span class="dt off"></span>offline' }
-}
-document.addEventListener('keydown',e=>{
-  if(e.key==='/' && document.activeElement.id!=='sr'){e.preventDefault();document.getElementById('sr').focus()}
-});
-setInterval(st,2000);st();
-</script>
-</body>
-</html>`;
+  return html
+    .replace('{{SECTIONS}}', sections)
+    .replace('{{TOOLS_COUNT}}', String(TOOLS.length))
+    .replace('{{SERVER_VERSION}}', SERVER_VERSION)
+    .replace('{{POLL_ADDR}}', `${HTTP_HOST}:${HTTP_PORT}`);
 }
 
 function startHttpServer() {
@@ -609,7 +483,7 @@ function startHttpServer() {
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       let parsed = {};
-      if (body) { try { parsed = JSON.parse(body); } catch {} }
+      if (body) { try { parsed = JSON.parse(body); } catch (e) { process.stderr.write(`[roblox-mcp] bad JSON from ${req.method} ${req.url}: ${e.message}\n`); } }
       const url = new URL(req.url, `http://${HTTP_HOST}`);
 
       if (req.method === 'GET' && url.pathname === '/poll') {
@@ -666,6 +540,7 @@ function startHttpServer() {
         }
         const c = clients.get(k);
         c.info = parsed;
+        c.active = true; // fresh plugin session = fresh client; re-enable if it was toggled off
         c.lastSeen = Date.now();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -673,9 +548,18 @@ function startHttpServer() {
       }
 
       if (req.method === 'POST' && url.pathname === '/client-toggle') {
+        if (!checkToken(req, url)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
         const v = clients.get(parsed.key);
-        if (v) {
-          v.active = !v.active;
+        if (!v) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Client not found: ${parsed.key}` }));
+          return;
+        }
+        v.active = !v.active;
           if (!v.active) {
             // Fail fast: pending commands targeted at this client can never
             // complete, so reject them instead of letting them hit the timeout.
@@ -687,8 +571,7 @@ function startHttpServer() {
               }
             }
           }
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         return;
       }
@@ -702,7 +585,7 @@ function startHttpServer() {
       if (req.method === 'POST' && url.pathname === '/log') {
         const entry = `[${new Date().toISOString()}] ${parsed.message || ''}\n`;
         process.stderr.write(`[plugin] ${parsed.message || ''}\n`);
-        try { fs.appendFileSync(path.join(__dirname, 'mcp.log'), entry); } catch {}
+        try { fs.appendFileSync(path.join(__dirname, 'mcp.log'), entry); } catch (e) { process.stderr.write(`[roblox-mcp] cannot append mcp.log: ${e.message}\n`); }
         res.writeHead(200); res.end('{}');
         return;
       }
@@ -712,7 +595,8 @@ function startHttpServer() {
           const data = fs.readFileSync(path.join(__dirname, 'mcp.log'), 'utf8');
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end(data);
-        } catch {
+        } catch (e) {
+          process.stderr.write(`[roblox-mcp] cannot read mcp.log: ${e.message}\n`);
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end('');
         }
@@ -720,6 +604,11 @@ function startHttpServer() {
       }
 
       if (req.method === 'POST' && url.pathname === '/call') {
+        if (!checkToken(req, url)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
         const { name, params, client } = parsed;
         const tool = TOOLS.find(t => t.name === name);
         if (!tool) {
@@ -764,7 +653,7 @@ function startHttpServer() {
 
       // Hot-reload: returns updated plugin source if mtime changed
       if (req.method === 'GET' && url.pathname === '/plugin-update') {
-        const pluginPath = path.join(__dirname, 'plugin.lua');
+        const pluginPath = PLUGIN_FILE;
         try {
           const stat = fs.statSync(pluginPath);
           const since = req.headers['if-modified-since'] ? new Date(req.headers['if-modified-since']).getTime() : 0;
@@ -784,10 +673,10 @@ function startHttpServer() {
         return;
       }
 
-      // Manual hot-reload trigger: re-read plugin.lua and notify
+      // Manual hot-reload trigger: re-read korone-mcp.lua and notify
       if (req.method === 'POST' && url.pathname === '/reload-plugin') {
         reloadFlag = Date.now().toString(36);
-        const pluginPath = path.join(__dirname, 'plugin.lua');
+        const pluginPath = PLUGIN_FILE;
         try {
           const source = fs.readFileSync(pluginPath, 'utf8');
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -912,7 +801,7 @@ async function handle(req) {
 rl.on('line', async (line) => {
   if (!line.trim()) return;
   let req;
-  try { req = JSON.parse(line); } catch { return; }
+  try { req = JSON.parse(line); } catch (e) { process.stderr.write(`[roblox-mcp] bad MCP line: ${e.message}\n`); return; }
 
   // Notification (no id) — ignore result
   if (req.id === undefined || req.id === null) {

@@ -1,6 +1,6 @@
 --[[
     Roblox MCP Plugin for Studio 2021
-    v1.1 - stdio MCP bridge plugin with a configurable settings panel
+    v1.2 - stdio MCP bridge plugin with a configurable settings panel
     Polls an HTTP bridge for commands, executes them, posts results.
 ]]
 
@@ -39,7 +39,8 @@ local DEFAULTS = {
     Enabled            = true,
     ShowStatusWidget   = true,
     StatusCheckInterval = 2,
-    VerboseLogging     = false
+    VerboseLogging     = false,
+    SafetyEnabled      = true
 }
 
 local SERVER_URL           = loadSetting("MCP_ServerURL", DEFAULTS.ServerURL)
@@ -49,6 +50,7 @@ local mcpEnabled           = loadSetting("MCP_Enabled", DEFAULTS.Enabled)
 local showStatusWidget     = loadSetting("MCP_ShowStatusWidget", DEFAULTS.ShowStatusWidget)
 local statusCheckInterval  = loadSetting("MCP_StatusCheckInterval", DEFAULTS.StatusCheckInterval)
 local verboseLogging       = loadSetting("MCP_VerboseLogging", DEFAULTS.VerboseLogging)
+local safetyEnabled        = loadSetting("MCP_SafetyEnabled", DEFAULTS.SafetyEnabled)
 
 -- ===========================================
 -- HTTP HELPERS
@@ -146,6 +148,14 @@ local function codeIsSafe(code)
     if string.find(code, "game:Shutdown") then return false, "Contains game:Shutdown" end
     if string.find(code, "while true do") and not string.find(code, "break") and not string.find(code, "task.wait") and not string.find(code, "wait(") then
         return false, "Infinite loop without wait"
+    end
+    -- Block escape-vector globals: anything that can load/compile code or
+    -- rewrite environments. May false-positive on comments/strings -
+    -- pass force=true to bypass.
+    for g in pairs(DANGEROUS_GLOBALS) do
+        if string.find(code, g) then
+            return false, "Uses restricted global: " .. g .. " (use force=true)"
+        end
     end
     return true, ""
 end
@@ -468,7 +478,7 @@ function handlers.write_script(params)
     if not inst then return { success = false, error = err } end
     local isScript = inst:IsA("Script") or inst:IsA("LocalScript") or inst:IsA("ModuleScript")
     if not isScript then return { success = false, error = "Target is not a Script/LocalScript/ModuleScript" } end
-    if not params.force then
+    if safetyEnabled and not params.force then
         local safe, sErr = codeIsSafe(params.source)
         if not safe then return { success = false, error = "Safety check failed: " .. sErr .. " (use force=true)" } end
     end
@@ -500,7 +510,7 @@ function handlers.check_script(params)
 end
 
 function handlers.execute_lua(params)
-    if not params.force then
+    if safetyEnabled and not params.force then
         local safe, sErr = codeIsSafe(params.code)
         if not safe then return { success = false, error = "Safety check failed: " .. sErr .. " (use force=true)" } end
     end
@@ -645,7 +655,7 @@ end
 
 httpPost("/hello", {
     plugin = "roblox-mcp",
-    version = "1.1",
+    version = "1.2",
     studioVersion = "2021",
     placeName = game.Name,
     clientName = CLIENT_NAME
@@ -660,12 +670,32 @@ if mcpEnabled then startPolling() end
 -- separate dockable window - some Studio builds handle those poorly)
 -- =================================
 local statusGui -- forward-declared; created below, toggled from the settings panel
-local toolbar = plugin:CreateToolbar("Roblox MCP")
-local toggleBtn = toolbar:CreateButton(
+
+-- Toolbar buttons can't be re-created with the same id while the old one
+-- still exists (hot reload would crash with "Cannot create more than one
+-- button with id ..."). Cache the toolbar + button in _G so reloads reuse
+-- them instead of trying to recreate them.
+local MCP_CACHE = _G.KORONE_MCP_CACHE
+_G.KORONE_MCP_CACHE = MCP_CACHE or {}
+MCP_CACHE = _G.KORONE_MCP_CACHE
+-- Detach any click handler left over from a previous instance
+if MCP_CACHE.clickConn then
+    pcall(function() MCP_CACHE.clickConn:Disconnect() end)
+    MCP_CACHE.clickConn = nil
+end
+if MCP_CACHE.unloadConn then
+    pcall(function() MCP_CACHE.unloadConn:Disconnect() end)
+    MCP_CACHE.unloadConn = nil
+end
+
+local toolbar = MCP_CACHE.toolbar or plugin:CreateToolbar("Roblox MCP")
+local toggleBtn = MCP_CACHE.toggleBtn or toolbar:CreateButton(
     "MCP Settings",
     "Show/hide the MCP settings panel",
     "rbxassetid://941139"
 )
+MCP_CACHE.toolbar = toolbar
+MCP_CACHE.toggleBtn = toggleBtn
 
 local COLORS = {
     bg = Color3.fromRGB(20, 20, 20),
@@ -691,8 +721,8 @@ settingsGui.Parent = game:GetService("CoreGui")
 
 local settingsFrame = Instance.new("Frame")
 settingsFrame.Name = "MCPSettingsFrame"
-settingsFrame.Size = UDim2.new(0, 300, 0, 360)
-settingsFrame.Position = UDim2.new(0.5, -150, 0.5, -180)
+settingsFrame.Size = UDim2.new(0, 640, 0, 480)
+settingsFrame.Position = UDim2.new(0.5, -320, 0.5, -240)
 settingsFrame.BackgroundColor3 = COLORS.bg
 settingsFrame.BorderColor3 = COLORS.border
 settingsFrame.BorderSizePixel = 1
@@ -816,7 +846,7 @@ local function setSettingsVisible(visible)
 end
 
 toggleBtn:SetActive(false)
-toggleBtn.Click:Connect(function()
+MCP_CACHE.clickConn = toggleBtn.Click:Connect(function()
     setSettingsVisible(not settingsFrame.Visible)
 end)
 closeBtn.MouseButton1Click:Connect(function()
@@ -986,13 +1016,19 @@ local enabledCheckboxCtl = makeCheckboxRow(5, "Polling enabled", mcpEnabled, fun
     end
 end)
 
-local showStatusCheckboxCtl = makeCheckboxRow(6, "Show status indicator", showStatusWidget, function(value)
+local safetyCheckboxCtl = makeCheckboxRow(6, "Safety checks enabled", safetyEnabled, function(value)
+    safetyEnabled = value
+    saveSetting("MCP_SafetyEnabled", safetyEnabled)
+    log("[MCP] Safety checks " .. (value and "enabled" or "disabled"))
+end)
+
+local showStatusCheckboxCtl = makeCheckboxRow(7, "Show status indicator", showStatusWidget, function(value)
     showStatusWidget = value
     saveSetting("MCP_ShowStatusWidget", showStatusWidget)
     if statusGui then statusGui.Enabled = showStatusWidget end
 end)
 
-local verboseCheckboxCtl = makeCheckboxRow(7, "Verbose logging", verboseLogging, function(value)
+local verboseCheckboxCtl = makeCheckboxRow(8, "Verbose logging", verboseLogging, function(value)
     verboseLogging = value
     saveSetting("MCP_VerboseLogging", verboseLogging)
 end)
@@ -1001,7 +1037,7 @@ end)
 local feedbackLabel = Instance.new("TextLabel")
 feedbackLabel.BackgroundTransparency = 1
 feedbackLabel.Size = UDim2.new(1, 0, 0, 16)
-feedbackLabel.LayoutOrder = 8
+feedbackLabel.LayoutOrder = 9
 feedbackLabel.Font = Enum.Font.Code
 feedbackLabel.TextSize = 11
 feedbackLabel.TextColor3 = COLORS.faint
@@ -1014,7 +1050,7 @@ feedbackLabel.Parent = root
 local btnRow = Instance.new("Frame")
 btnRow.BackgroundTransparency = 1
 btnRow.Size = UDim2.new(1, 0, 0, 26)
-btnRow.LayoutOrder = 9
+btnRow.LayoutOrder = 10
 btnRow.Parent = root
 
 local saveBtn = Instance.new("TextButton")
@@ -1045,7 +1081,7 @@ testBtn.Parent = btnRow
 local resetRow = Instance.new("Frame")
 resetRow.BackgroundTransparency = 1
 resetRow.Size = UDim2.new(1, 0, 0, 26)
-resetRow.LayoutOrder = 10
+resetRow.LayoutOrder = 11
 resetRow.Parent = root
 
 local resetBtn = Instance.new("TextButton")
@@ -1110,12 +1146,14 @@ resetBtn.MouseButton1Click:Connect(function()
     mcpEnabled = DEFAULTS.Enabled
     showStatusWidget = DEFAULTS.ShowStatusWidget
     verboseLogging = DEFAULTS.VerboseLogging
+    safetyEnabled = DEFAULTS.SafetyEnabled
 
     urlBox.Text = SERVER_URL
     intervalBox.Text = tostring(POLL_INTERVAL)
     nameBox.Text = CLIENT_NAME
     statusIntervalBox.Text = tostring(statusCheckInterval)
     enabledCheckboxCtl.setValue(mcpEnabled, true)
+    safetyCheckboxCtl.setValue(safetyEnabled, true)
     showStatusCheckboxCtl.setValue(showStatusWidget, true)
     verboseCheckboxCtl.setValue(verboseLogging, true)
 
@@ -1126,6 +1164,7 @@ resetBtn.MouseButton1Click:Connect(function()
     saveSetting("MCP_Enabled", mcpEnabled)
     saveSetting("MCP_ShowStatusWidget", showStatusWidget)
     saveSetting("MCP_VerboseLogging", verboseLogging)
+    saveSetting("MCP_SafetyEnabled", safetyEnabled)
 
     if statusGui then statusGui.Enabled = showStatusWidget end
 
@@ -1217,13 +1256,15 @@ startStatusCheck()
 local reloadCheckConn
 
 local function teardown()
-    if tickConn then tickConn:Disconnect() end
-    if statusCheckConn then statusCheckConn:Disconnect() end
-    if reloadCheckConn then reloadCheckConn:Disconnect() end
-    if statusGui then statusGui:Destroy() end
-    if settingsGui then settingsGui:Destroy() end
-    pcall(function() toggleBtn:Destroy() end)
-    pcall(function() toolbar:Destroy() end)
+    if tickConn then tickConn:Disconnect(); tickConn = nil end
+    if statusCheckConn then statusCheckConn:Disconnect(); statusCheckConn = nil end
+    if reloadCheckConn then reloadCheckConn:Disconnect(); reloadCheckConn = nil end
+    if statusGui then statusGui:Destroy(); statusGui = nil end
+    if settingsGui then settingsGui:Destroy(); settingsGui = nil end
+    if MCP_CACHE.clickConn then
+        pcall(function() MCP_CACHE.clickConn:Disconnect() end)
+        MCP_CACHE.clickConn = nil
+    end
 end
 
 local lastReloadFlag = nil
@@ -1269,7 +1310,11 @@ reloadCheckConn = RunService.Heartbeat:Connect(function()
 end)
 
 -- Cleanup on plugin unload
-plugin.Unloading:Connect(function()
+MCP_CACHE.unloadConn = plugin.Unloading:Connect(function()
     teardown()
+    -- Only on full unload do we release the toolbar button
+    pcall(function() toggleBtn:Destroy() end)
+    pcall(function() toolbar:Destroy() end)
+    _G.KORONE_MCP_CACHE = nil
     log("[MCP] Plugin unloaded")
 end)

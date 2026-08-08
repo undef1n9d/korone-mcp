@@ -6,7 +6,7 @@
 
 **An MCP bridge that lets AI assistants control Roblox Studio 2021 in real time**
 
-![Version](https://img.shields.io/badge/version-v1.1-orange?style=flat-square)
+![Version](https://img.shields.io/badge/version-v1.2-orange?style=flat-square)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white)
 ![Luau](https://img.shields.io/badge/luau-plugin-00A2FF?style=flat-square&logo=roblox&logoColor=white)
 ![MCP](https://img.shields.io/badge/protocol-MCP%202024--11--05-purple?style=flat-square)
@@ -21,14 +21,14 @@
 - **30+ tools** — from `read_workspace` and `create_instance` to `execute_lua`, `set_lighting` and tagging.
 - **Dot-path notation** — address instances as `Workspace.Bridge.Part` instead of fighting slash paths.
 - **Multiple clients** — several Studio windows can connect at once; each gets its own toggle, and you can target a specific one (click its chip in the panel, or pass `client` to any tool from an MCP client)
-- **Hot reload** — while developing, edit `plugin.lua` and the plugin picks the changes up in seconds.
+- **Hot reload** — while developing, edit `korone-mcp.lua` and the plugin picks the changes up in seconds.
 
 ## Architecture
 
 ```mermaid
 graph LR
     A[AI assistant / MCP client] -->|MCP| B[index.js server]
-    B -->|HTTP :4444| C[plugin.lua in Studio]
+    B -->|HTTP :4444| C[korone-mcp.lua in Studio]
     C -->|poll / result| D[Roblox Studio ~2021]
     E[Web panel :4444] --> B
 ```
@@ -37,7 +37,7 @@ graph LR
 
 - **Node.js 18+**
 - **Roblox Studio 2021** — any 2021M-era build
-- The plugin file `plugin.lua` loaded into Studio
+- The plugin file `korone-mcp.lua` loaded into Studio
 
 ## Installation
 
@@ -49,7 +49,7 @@ graph LR
    ```
 
 2. Open `http://127.0.0.1:4444` in a browser to reach the web panel.
-3. In Studio, load `plugin.lua` as a plugin (Plugins folder or drag-and-drop into Studio).
+3. In Studio, load `korone-mcp.lua` as a plugin (Plugins folder or drag-and-drop into Studio).
 4. The panel should switch to **connected** and the small `MCP: checking...` widget appears in the corner.
 
 ## Configuration
@@ -108,12 +108,23 @@ Example: ask your MCP client to run `create_instance` with `parent=Workspace` an
 
 With several Studio windows connected: click a client chip in the panel to target it (highlighted green), or pass `client: "studio"` to any tool from an MCP client. Without a target, the command goes to the only active client — or, if several are active, to the most recently active one.
 
+## Security
+
+By default the bridge is **open** — it only listens on `127.0.0.1`, so only local processes can reach it. If you want extra protection (e.g. a page in your browser could trigger `/call` while you have the panel open), flip the flag in `index.js`:
+
+```js
+const ENABLE_AUTH = true;   // protect /call and /client-toggle
+const MCP_TOKEN = 'your-secret';
+```
+
+When enabled, `/call` and `/client-toggle` require `?token=...` or the `x-mcp-token` header. Open the panel as `http://127.0.0.1:4444/?token=your-secret` (the panel stores it and sends it with every request). Keep `ENABLE_AUTH = false` to disable the check entirely.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | Panel says **checking...** forever | Make sure the server is running and `MCP_ServerURL` points at `http://127.0.0.1:4444`; check the Studio output for errors |
-| `â€”` / mojibake in Studio logs | Non-ASCII characters in `plugin.lua` — replace them with ASCII (`-`, `=`) |
+| `â€”` / mojibake in Studio logs | Non-ASCII characters in `korone-mcp.lua` — replace them with ASCII (`-`, `=`) |
 | Duplicate/ghost clients on the panel | Restart the server so stale registrations clear; each Studio window uses its own `?client=` key |
 
 ## License
