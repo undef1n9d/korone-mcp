@@ -12,9 +12,9 @@ const HTTP_HOST = '127.0.0.1';
 const POLL_TIMEOUT_MS = 30000;
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_NAME = 'roblox-mcp';
+const SERVER_NAME = 'legacy-mcp';
 const SERVER_VERSION = '1.2';
-const PLUGIN_FILE = path.join(__dirname, 'korone-mcp.lua');
+const PLUGIN_FILE = path.join(__dirname, 'LegacyMCP.lua');
 
 // Optional auth: set ENABLE_AUTH to true and choose a token to protect
 // /call and /client-toggle. Default is off (open local access on 127.0.0.1).
@@ -96,12 +96,13 @@ const TOOLS = [
   {
     name: 'get_properties',
     category: 'Explore',
-    description: 'Read properties of an instance by path.',
+    description: 'Read properties of an instance by path. Pass listAll=true to get a list of common properties for its class with their Lua types and current values (the plugin cannot enumerate every property, so this is a curated list).',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the instance', example: 'Workspace.Part' },
-        properties: { type: 'array', items: { type: 'string' }, description: 'Optional specific property names (omit for all)', example: ['Name', 'Position'] }
+        properties: { type: 'array', items: { type: 'string' }, description: 'Optional specific property names (omit for all)', example: ['Name', 'Position'] },
+        listAll: { type: 'boolean', description: 'Return a curated list of common properties for this class, with types and values (default false)' }
       },
       required: ['path']
     }
@@ -214,13 +215,62 @@ const TOOLS = [
     }
   },
   {
-    name: 'read_script',
+    name: 'edit_script',
     category: 'Scripts',
-    description: 'Read source code of a script by path.',
+    description: 'Partially edit a Script/LocalScript/ModuleScript: replaces the exact text old_text with new_text, leaving the rest of the source untouched. Fails if old_text is not found, or matches more than once (unless replaceAll=true). Prefer this over write_script for small changes.',
     inputSchema: {
       type: 'object',
-      properties: { path: { type: 'string', description: 'Path to the script', example: 'ServerScriptService.Main' } },
+      properties: {
+        path: { type: 'string', description: 'Path to the script', example: 'ServerScriptService.Main' },
+        old_text: { type: 'string', description: 'Exact existing text to replace (must match the source precisely, including whitespace)', example: 'print("hello")' },
+        new_text: { type: 'string', description: 'Text to put in place of old_text (empty string deletes it)', example: 'print("hi")' },
+        replaceAll: { type: 'boolean', description: 'Replace every occurrence of old_text instead of requiring a single match (default false)' },
+        force: { type: 'boolean', description: 'Bypass safety checks (default false)' }
+      },
+      required: ['path', 'old_text', 'new_text']
+    }
+  },
+  {
+    name: 'read_script',
+    category: 'Scripts',
+    description: 'Read source code of a script by path. Pass startLine/endLine to read only a range (returns numbered lines and totalLines).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the script', example: 'ServerScriptService.Main' },
+        startLine: { type: 'number', description: 'First line to read (1-based, optional)', example: 1 },
+        endLine: { type: 'number', description: 'Last line to read (inclusive, optional)', example: 50 }
+      },
       required: ['path']
+    }
+  },
+  {
+    name: 'search_scripts',
+    category: 'Scripts',
+    description: 'Search the source of all scripts under searchIn for a plain-text (or Lua pattern) query. Returns matching script paths with line numbers and line text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Text to search for', example: 'PlayerAdded' },
+        searchIn: { type: 'string', description: 'Path to root for search. Default: game', example: 'ServerScriptService' },
+        pattern: { type: 'boolean', description: 'Treat query as a Lua pattern instead of plain text (default false)' },
+        caseSensitive: { type: 'boolean', description: 'Case-sensitive match (default false)' },
+        maxResults: { type: 'number', description: 'Max matching lines to return (default 100)', example: 100 }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'get_output',
+    category: 'Core',
+    description: 'Return recent lines from the Studio Output window (captured by the plugin), optionally filtered by a substring. Use it to see prints, warnings and errors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        count: { type: 'number', description: 'Number of most recent lines to return (default 50, max 500)', example: 50 },
+        filter: { type: 'string', description: 'Only return lines containing this text (optional)', example: 'error' },
+        messageType: { type: 'string', description: 'Only return one type: Output, Warning, Error, Info (optional)', example: 'Error' }
+      }
     }
   },
   {
@@ -247,6 +297,18 @@ const TOOLS = [
       },
       required: ['code']
     }
+  },
+  {
+    name: 'undo',
+    category: 'Core',
+    description: 'Undo the last change in Studio (ChangeHistoryService). Repeat the call to undo further back.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'redo',
+    category: 'Core',
+    description: 'Redo the last undone change in Studio (ChangeHistoryService).',
+    inputSchema: { type: 'object', properties: {} }
   },
   {
     name: 'select_instances',
@@ -462,7 +524,7 @@ function renderPanel(sections) {
   try {
     html = fs.readFileSync(path.join(__dirname, 'panel.html'), 'utf8');
   } catch (err) {
-    process.stderr.write(`[roblox-mcp] cannot read panel.html: ${err.message}\n`);
+    process.stderr.write(`[legacy-mcp] cannot read panel.html: ${err.message}\n`);
     return '<!DOCTYPE html><html><body style="background:#141414;color:#c33;font:14px monospace;padding:24px"><h1>panel.html not found</h1><p>' + err.message + '</p></body></html>';
   }
   return html
@@ -483,7 +545,7 @@ function startHttpServer() {
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       let parsed = {};
-      if (body) { try { parsed = JSON.parse(body); } catch (e) { process.stderr.write(`[roblox-mcp] bad JSON from ${req.method} ${req.url}: ${e.message}\n`); } }
+      if (body) { try { parsed = JSON.parse(body); } catch (e) { process.stderr.write(`[legacy-mcp] bad JSON from ${req.method} ${req.url}: ${e.message}\n`); } }
       const url = new URL(req.url, `http://${HTTP_HOST}`);
 
       if (req.method === 'GET' && url.pathname === '/poll') {
@@ -585,7 +647,7 @@ function startHttpServer() {
       if (req.method === 'POST' && url.pathname === '/log') {
         const entry = `[${new Date().toISOString()}] ${parsed.message || ''}\n`;
         process.stderr.write(`[plugin] ${parsed.message || ''}\n`);
-        try { fs.appendFileSync(path.join(__dirname, 'mcp.log'), entry); } catch (e) { process.stderr.write(`[roblox-mcp] cannot append mcp.log: ${e.message}\n`); }
+        try { fs.appendFileSync(path.join(__dirname, 'mcp.log'), entry); } catch (e) { process.stderr.write(`[legacy-mcp] cannot append mcp.log: ${e.message}\n`); }
         res.writeHead(200); res.end('{}');
         return;
       }
@@ -596,7 +658,7 @@ function startHttpServer() {
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end(data);
         } catch (e) {
-          process.stderr.write(`[roblox-mcp] cannot read mcp.log: ${e.message}\n`);
+          process.stderr.write(`[legacy-mcp] cannot read mcp.log: ${e.message}\n`);
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end('');
         }
@@ -673,7 +735,7 @@ function startHttpServer() {
         return;
       }
 
-      // Manual hot-reload trigger: re-read korone-mcp.lua and notify
+      // Manual hot-reload trigger: re-read LegacyMCP.lua and notify
       if (req.method === 'POST' && url.pathname === '/reload-plugin') {
         reloadFlag = Date.now().toString(36);
         const pluginPath = PLUGIN_FILE;
@@ -692,10 +754,10 @@ function startHttpServer() {
     });
   });
   server.listen(HTTP_PORT, HTTP_HOST, () => {
-    process.stderr.write(`[roblox-mcp] HTTP bridge on http://${HTTP_HOST}:${HTTP_PORT}\n`);
+    process.stderr.write(`[legacy-mcp] HTTP bridge on http://${HTTP_HOST}:${HTTP_PORT}\n`);
   });
   server.on('error', (err) => {
-    process.stderr.write(`[roblox-mcp] HTTP error: ${err.message}\n`);
+    process.stderr.write(`[legacy-mcp] HTTP error: ${err.message}\n`);
   });
 }
 
@@ -801,12 +863,12 @@ async function handle(req) {
 rl.on('line', async (line) => {
   if (!line.trim()) return;
   let req;
-  try { req = JSON.parse(line); } catch (e) { process.stderr.write(`[roblox-mcp] bad MCP line: ${e.message}\n`); return; }
+  try { req = JSON.parse(line); } catch (e) { process.stderr.write(`[legacy-mcp] bad MCP line: ${e.message}\n`); return; }
 
   // Notification (no id) — ignore result
   if (req.id === undefined || req.id === null) {
     try { await handle(req); } catch (err) {
-      process.stderr.write(`[roblox-mcp] handler error: ${err.message}\n`);
+      process.stderr.write(`[legacy-mcp] handler error: ${err.message}\n`);
     }
     return;
   }
@@ -826,4 +888,4 @@ rl.on('line', async (line) => {
 rl.on('close', () => process.exit(0));
 
 startHttpServer();
-process.stderr.write(`[roblox-mcp] stdio MCP server ready\n`);
+process.stderr.write(`[legacy-mcp] stdio MCP server ready\n`);

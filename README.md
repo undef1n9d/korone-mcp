@@ -1,10 +1,8 @@
 <div align="center">
 
-<img src="https://files.catbox.moe/ztl230.png" alt="korone studio 0.477 (2021M) MCP" width="96" height="96">
+# Legacy MCP (2020L+)
 
-# Korone Studio (2021M) MCP
-
-**An MCP bridge that lets AI assistants control Roblox Studio 2021 in real time**
+**An MCP bridge that lets AI assistants control Roblox Studio 2020L and newer in real time**
 
 ![Version](https://img.shields.io/badge/version-v1.2-orange?style=flat-square)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white)
@@ -21,23 +19,23 @@
 - **30+ tools** — from `read_workspace` and `create_instance` to `execute_lua`, `set_lighting` and tagging.
 - **Dot-path notation** — address instances as `Workspace.Bridge.Part` instead of fighting slash paths.
 - **Multiple clients** — several Studio windows can connect at once; each gets its own toggle, and you can target a specific one (click its chip in the panel, or pass `client` to any tool from an MCP client)
-- **Hot reload** — while developing, edit `korone-mcp.lua` and the plugin picks the changes up in seconds.
+- **Hot reload** — while developing, edit `LegacyMCP.lua` and the plugin picks the changes up in seconds.
 
 ## Architecture
 
 ```mermaid
 graph LR
     A[AI assistant / MCP client] -->|MCP| B[index.js server]
-    B -->|HTTP :4444| C[korone-mcp.lua in Studio]
-    C -->|poll / result| D[Roblox Studio ~2021]
+    B -->|HTTP :4444| C[LegacyMCP.lua in Studio]
+    C -->|poll / result| D[Roblox Studio 2020L+]
     E[Web panel :4444] --> B
 ```
 
 ## Requirements
 
 - **Node.js 18+**
-- **Roblox Studio 2021** — any 2021M-era build
-- The plugin file `korone-mcp.lua` loaded into Studio
+- **Roblox Studio 2020L or newer**
+- The plugin file `LegacyMCP.lua` loaded into Studio
 
 ## Installation
 
@@ -49,7 +47,7 @@ graph LR
    ```
 
 2. Open `http://127.0.0.1:4444` in a browser to reach the web panel.
-3. In Studio, load `korone-mcp.lua` as a plugin (Plugins folder or drag-and-drop into Studio).
+3. In Studio, load `LegacyMCP.lua` as a plugin (Plugins folder or drag-and-drop into Studio).
 4. The panel should switch to **connected** and the small `MCP: checking...` widget appears in the corner.
 
 ## Configuration
@@ -79,7 +77,7 @@ Slash notation (`Workspace/Bridge/Part`) is also accepted for compatibility.
 
 ## Studio compatibility
 
-Designed for 2021-era Roblox Studio builds (like 2021M). Things to keep in mind:
+Designed for Roblox Studio 2020L and newer. Things to keep in mind:
 
 - **Old `HttpService`** — only two-argument calls are safe: `GetAsync(url)` and `PostAsync(url, body)`. Extra arguments (headers, content type) are **not** supported and fail silently.
 - **ASCII-only strings** — non-ASCII characters in the Lua source (like `—` or `═`) turn into mojibake (`â€”`) in logs. The plugin keeps its strings ASCII.
@@ -124,7 +122,7 @@ When enabled, `/call` and `/client-toggle` require `?token=...` or the `x-mcp-to
 | Symptom | Fix |
 |---|---|
 | Panel says **checking...** forever | Make sure the server is running and `MCP_ServerURL` points at `http://127.0.0.1:4444`; check the Studio output for errors |
-| `â€”` / mojibake in Studio logs | Non-ASCII characters in `korone-mcp.lua` — replace them with ASCII (`-`, `=`) |
+| `â€”` / mojibake in Studio logs | Non-ASCII characters in `LegacyMCP.lua` — replace them with ASCII (`-`, `=`) |
 | Duplicate/ghost clients on the panel | Restart the server so stale registrations clear; each Studio window uses its own `?client=` key |
 
 ## License

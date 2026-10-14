@@ -1,5 +1,5 @@
 --[[
-    Roblox MCP Plugin for Studio 2021
+    Legacy MCP Plugin for Roblox Studio 2020L+
     v1.2 - stdio MCP bridge plugin with a configurable settings panel
     Polls an HTTP bridge for commands, executes them, posts results.
 ]]
@@ -13,6 +13,7 @@ local Selection            = game:GetService("Selection")
 local RunService           = game:GetService("RunService")
 local CollectionService    = game:GetService("CollectionService")
 local UserInputService     = game:GetService("UserInputService")
+local LogService           = game:GetService("LogService")
 
 if not plugin then
     warn("[MCP] Not running as plugin - aborting.")
@@ -153,7 +154,7 @@ local function codeIsSafe(code)
     -- rewrite environments. May false-positive on comments/strings -
     -- pass force=true to bypass.
     for g in pairs(DANGEROUS_GLOBALS) do
-        if string.find(code, g) then
+        if string.find(code, "%f[%w_]" .. g .. "%f[^%w_]") then
             return false, "Uses restricted global: " .. g .. " (use force=true)"
         end
     end
@@ -214,6 +215,8 @@ local function readProperty(instance, key)
         return { _type="Instance", path=getPathOf(val), name=val.Name, className=val.ClassName }
     elseif typeof(val) == "table" or typeof(val) == "function" or typeof(val) == "thread" then
         return "<" .. typeof(val) .. ">"
+    elseif type(val) == "userdata" then
+        return tostring(val)
     else
         return val
     end
@@ -317,12 +320,54 @@ function handlers.get_children(params)
     return { success = true, data = list }
 end
 
+local CLASS_PROPERTY_HINTS = {
+    { isA = "BasePart", props = { "Anchored", "CanCollide", "CanQuery", "CanTouch", "Position", "Size", "CFrame", "Orientation", "Color", "BrickColor", "Material", "Transparency", "Reflectance", "Massless", "CollisionGroup" } },
+    { isA = "Model", props = { "PrimaryPart", "WorldPivot" } },
+    { isA = "LuaSourceContainer", props = { "Source", "Enabled", "Disabled" } },
+    { isA = "GuiObject", props = { "Visible", "Position", "Size", "AnchorPoint", "BackgroundColor3", "BackgroundTransparency", "ZIndex", "Active" } },
+    { isA = "TextLabel", props = { "Text", "TextColor3", "TextSize", "Font", "TextScaled" } },
+    { isA = "TextButton", props = { "Text", "TextColor3", "TextSize", "Font", "TextScaled" } },
+    { isA = "ImageLabel", props = { "Image", "ImageColor3", "ImageTransparency" } },
+    { isA = "Light", props = { "Brightness", "Color", "Enabled", "Range", "Shadows" } },
+    { isA = "Sound", props = { "SoundId", "Volume", "Pitch", "Looped", "Playing", "TimePosition", "PlaybackSpeed" } },
+    { isA = "ValueBase", props = { "Value" } },
+    { isA = "Humanoid", props = { "Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight", "DisplayName" } },
+}
+
+local GENERAL_PROPERTY_HINTS = { "Name", "ClassName", "Parent", "Archivable" }
+
 function handlers.get_properties(params)
     local inst, err = resolvePath(params.path)
     if not inst then return { success = false, error = err } end
     local result = { name = inst.Name, className = inst.ClassName, path = getPathOf(inst), properties = {} }
     local wanted = params.properties
-    if wanted and #wanted > 0 then
+    if params.listAll then
+        local candidates = {}
+        local seen = {}
+        local function addAll(list)
+            for _, key in ipairs(list) do
+                if not seen[key] then
+                    seen[key] = true
+                    table.insert(candidates, key)
+                end
+            end
+        end
+        addAll(GENERAL_PROPERTY_HINTS)
+        for _, hint in ipairs(CLASS_PROPERTY_HINTS) do
+            if inst:IsA(hint.isA) then addAll(hint.props) end
+        end
+        table.sort(candidates)
+        local available = {}
+        for _, key in ipairs(candidates) do
+            local ok, val = pcall(function() return inst[key] end)
+            if ok then
+                local v = readProperty(inst, key)
+                available[key] = { type = typeof(val), value = v }
+            end
+        end
+        result.properties = available
+        result.note = "Known common properties for this class only; the plugin cannot enumerate every property at runtime."
+    elseif wanted and #wanted > 0 then
         for _, key in ipairs(wanted) do
             result.properties[key] = readProperty(inst, key)
         end
@@ -487,12 +532,131 @@ function handlers.write_script(params)
     return { success = true, data = { path = getPathOf(inst), bytes = #params.source } }
 end
 
+function handlers.edit_script(params)
+    local inst, err = resolvePath(params.path)
+    if not inst then return { success = false, error = err } end
+    local isScript = inst:IsA("Script") or inst:IsA("LocalScript") or inst:IsA("ModuleScript")
+    if not isScript then return { success = false, error = "Target is not a Script/LocalScript/ModuleScript" } end
+    local oldText = params.old_text
+    local newText = params.new_text or ""
+    if not oldText or oldText == "" then return { success = false, error = "old_text is empty" } end
+    if safetyEnabled and not params.force then
+        local safe, sErr = codeIsSafe(newText)
+        if not safe then return { success = false, error = "Safety check failed: " .. sErr .. " (use force=true)" } end
+    end
+    local src = inst.Source
+    local matches = {}
+    local pos = 1
+    while true do
+        local s, e = string.find(src, oldText, pos, true)
+        if not s then break end
+        table.insert(matches, { s, e })
+        pos = e + 1
+    end
+    if #matches == 0 then return { success = false, error = "old_text not found in script" } end
+    if #matches > 1 and not params.replaceAll then
+        return { success = false, error = "old_text matches " .. #matches .. " times; add more context or use replaceAll=true" }
+    end
+    local targets = params.replaceAll and matches or { matches[1] }
+    local parts = {}
+    local last = 1
+    for _, m in ipairs(targets) do
+        table.insert(parts, string.sub(src, last, m[1] - 1))
+        table.insert(parts, newText)
+        last = m[2] + 1
+    end
+    table.insert(parts, string.sub(src, last))
+    local newSource = table.concat(parts)
+    inst.Source = newSource
+    ChangeHistoryService:SetWaypoint("MCP edit_script")
+    return { success = true, data = { path = getPathOf(inst), replacements = #targets, bytes = #newSource } }
+end
+
 function handlers.read_script(params)
     local inst, err = resolvePath(params.path)
     if not inst then return { success = false, error = err } end
     local isScript = inst:IsA("Script") or inst:IsA("LocalScript") or inst:IsA("ModuleScript")
     if not isScript then return { success = false, error = "Target is not a Script/LocalScript/ModuleScript" } end
-    return { success = true, data = inst.Source }
+    if not params.startLine and not params.endLine then
+        return { success = true, data = inst.Source }
+    end
+    local lines = {}
+    for line in string.gmatch(inst.Source .. "\n", "(.-)\r?\n") do
+        table.insert(lines, line)
+    end
+    local first = params.startLine or 1
+    local last = params.endLine or #lines
+    local out = {}
+    for i = math.max(1, first), math.min(#lines, last) do
+        table.insert(out, i .. ": " .. lines[i])
+    end
+    return { success = true, data = { totalLines = #lines, from = first, to = last, text = table.concat(out, "\n") } }
+end
+
+function handlers.search_scripts(params)
+    local root, err = resolvePath(params.searchIn)
+    if not root then return { success = false, error = err } end
+    local query = params.query
+    if not query or query == "" then return { success = false, error = "query is empty" } end
+    local usePattern = params.pattern == true
+    local caseSensitive = usePattern or params.caseSensitive == true
+    if not caseSensitive then query = string.lower(query) end
+    if usePattern then
+        local ok, perr = pcall(string.find, "", query)
+        if not ok then return { success = false, error = "Invalid pattern: " .. tostring(perr) } end
+    end
+    local maxResults = params.maxResults or 100
+    local found = {}
+    local function scanScript(inst)
+        local src = inst.Source
+        local lineNo = 0
+        for line in string.gmatch(src .. "\n", "(.-)\r?\n") do
+            lineNo = lineNo + 1
+            local hay = caseSensitive and line or string.lower(line)
+            local hit
+            if usePattern then
+                hit = string.find(hay, query) ~= nil
+            else
+                hit = string.find(hay, query, 1, true) ~= nil
+            end
+            if hit then
+                table.insert(found, { path = getPathOf(inst), line = lineNo, text = line })
+                if #found >= maxResults then return true end
+            end
+        end
+        return false
+    end
+    local function walk(inst)
+        if inst:IsA("LuaSourceContainer") then
+            if scanScript(inst) then return true end
+        end
+        for _, c in ipairs(inst:GetChildren()) do
+            if walk(c) then return true end
+        end
+        return false
+    end
+    walk(root)
+    return { success = true, data = { count = #found, matches = found } }
+end
+
+function handlers.get_output(params)
+    local count = math.min(params.count or 50, 500)
+    local filter = params.filter
+    local wantType = params.messageType
+    local typeNames = { MessageOutput = "Output", MessageInfo = "Info", MessageWarning = "Warning", MessageError = "Error" }
+    local history = LogService:GetLogHistory()
+    local out = {}
+    for i = #history, 1, -1 do
+        local m = history[i]
+        local typeName = typeNames[m.messageType.Name] or m.messageType.Name
+        local okType = (not wantType) or string.lower(typeName) == string.lower(wantType)
+        local okFilter = (not filter) or string.find(m.message, filter, 1, true) ~= nil
+        if okType and okFilter then
+            table.insert(out, 1, { type = typeName, message = m.message })
+            if #out >= count then break end
+        end
+    end
+    return { success = true, data = { count = #out, lines = out } }
 end
 
 function handlers.check_script(params)
@@ -530,6 +694,18 @@ function handlers.execute_lua(params)
         end
     end
     return { success = true, data = { ok = true, returns = out } }
+end
+
+function handlers.undo(params)
+    local ok, err = pcall(function() ChangeHistoryService:Undo() end)
+    if not ok then return { success = false, error = "Undo failed: " .. tostring(err) } end
+    return { success = true, data = { undone = true } }
+end
+
+function handlers.redo(params)
+    local ok, err = pcall(function() ChangeHistoryService:Redo() end)
+    if not ok then return { success = false, error = "Redo failed: " .. tostring(err) } end
+    return { success = true, data = { redone = true } }
 end
 
 function handlers.select_instances(params)
@@ -654,9 +830,9 @@ local function stopPolling()
 end
 
 httpPost("/hello", {
-    plugin = "roblox-mcp",
+    plugin = "legacy-mcp",
     version = "1.2",
-    studioVersion = "2021",
+    studioVersion = "2020L+",
     placeName = game.Name,
     clientName = CLIENT_NAME
 })
@@ -675,9 +851,9 @@ local statusGui -- forward-declared; created below, toggled from the settings pa
 -- still exists (hot reload would crash with "Cannot create more than one
 -- button with id ..."). Cache the toolbar + button in _G so reloads reuse
 -- them instead of trying to recreate them.
-local MCP_CACHE = _G.KORONE_MCP_CACHE
-_G.KORONE_MCP_CACHE = MCP_CACHE or {}
-MCP_CACHE = _G.KORONE_MCP_CACHE
+local MCP_CACHE = _G.LEGACY_MCP_CACHE
+_G.LEGACY_MCP_CACHE = MCP_CACHE or {}
+MCP_CACHE = _G.LEGACY_MCP_CACHE
 -- Detach any click handler left over from a previous instance
 if MCP_CACHE.clickConn then
     pcall(function() MCP_CACHE.clickConn:Disconnect() end)
@@ -1315,6 +1491,6 @@ MCP_CACHE.unloadConn = plugin.Unloading:Connect(function()
     -- Only on full unload do we release the toolbar button
     pcall(function() toggleBtn:Destroy() end)
     pcall(function() toolbar:Destroy() end)
-    _G.KORONE_MCP_CACHE = nil
+    _G.LEGACY_MCP_CACHE = nil
     log("[MCP] Plugin unloaded")
 end)
